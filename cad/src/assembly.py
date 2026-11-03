@@ -1,35 +1,51 @@
-"""Vacuum cup + pipe elbow + push-to-connect elbow, 1/8 NPT threads seated shoulder-to-face.
+"""Vacuum gripper arm IE7981A01, built from the vendor parts.
 
-The pipe elbow is the reference. It is the only part with female ports, so it takes the
-two male-threaded parts. The two pipe nipples are male on both ends and have no female
-partner in this set, so they are not part of this assembly.
+Every component is a vendor part placed with the transform it has in the reference
+assembly `vendor/IE7981A01_reference_assembly.step`, so the arrangement is exactly the
+supplied design. The manifold is IE7981P01 (`vendor/IE7981P01.step`).
+
+Items: 1 vacuum cup, 2 pipe elbow, 3 12 in nipple, 4 manifold,
+       5 push-to-connect elbow (x2), 6 close nipple.
 """
 import build123d as bd
-from cad import model
+from cad import model, read_step
 
-from parts import pipe_elbow, push_to_connect_elbow, vacuum_cup
+from parts import (VENDOR, manifold, pipe_elbow, pipe_nipple_long, pipe_nipple_short,
+                   push_to_connect_elbow, vacuum_cup)
 
-# Datums measured on the vendor STEP files (mm).
-ELBOW_PORT_FACE = 8.73125   # pipe_elbow: both port faces (+Y at y=8.73, +Z at z=8.73)
-ELBOW_AXIS = -8.73125       # pipe_elbow: +Z leg axis at y=-8.73125, +Y leg axis at z=-8.73125
-CUP_SHOULDER_Z = -5.334     # vacuum_cup: hex shoulder face (thread runs from z=-12.95 up to it)
-PTC_SHOULDER_Y = -5.99694   # push_to_connect_elbow: shoulder face of the thread (tip at y=-12.7)
-PTC_AXIS_Z = -9.398         # push_to_connect_elbow: thread axis
+REFERENCE = VENDOR / "IE7981A01_reference_assembly.step"
+
+# (reference component, part model, label)
+PLACEMENTS = [
+    ("NAUO2", vacuum_cup, "vacuum_cup"),
+    ("NAUO3", pipe_elbow, "pipe_elbow"),
+    ("NAUO1", pipe_nipple_long, "pipe_nipple_long"),
+    ("NAUO4", manifold, "manifold"),
+    ("NAUO5", push_to_connect_elbow, "push_to_connect_elbow_upper"),
+    ("NAUO6", push_to_connect_elbow, "push_to_connect_elbow_lower"),
+    ("NAUO7", pipe_nipple_short, "pipe_nipple_short"),
+]
+
+
+def reference_locations():
+    ref = read_step(REFERENCE)
+    return {c.label: c.location for c in ref.children}
+
+
+def placed_parts():
+    """[(label, placed shape)] in item order."""
+    locs = reference_locations()
+    out = []
+    for nauo, part, label in PLACEMENTS:
+        shape = locs[nauo] * part().shape
+        shape.label = label
+        out.append((label, shape))
+    return out
 
 
 @model
 def vacuum_gripper():
-    elbow = pipe_elbow().shape
-
-    # Cup: thread axis onto the elbow's +Z leg, shoulder against the +Z port face.
-    cup = bd.Pos(0, ELBOW_AXIS, ELBOW_PORT_FACE - CUP_SHOULDER_Z) * vacuum_cup().shape
-    cup.label = "vacuum_cup"
-
-    # Push-to-connect elbow: thread axis onto the +Y leg, shoulder against the +Y port face.
-    ptc = bd.Pos(0, ELBOW_PORT_FACE - PTC_SHOULDER_Y, ELBOW_AXIS - PTC_AXIS_Z) * push_to_connect_elbow().shape
-    ptc.label = "push_to_connect_elbow"
-
-    return bd.Compound(children=[elbow, cup, ptc], label="vacuum_gripper")
+    return bd.Compound(children=[s for _, s in placed_parts()], label="vacuum_gripper")
 
 
 if __name__ == "__main__":

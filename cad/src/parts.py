@@ -42,6 +42,12 @@ def pipe_nipple_long():
     return _vendor("44665K541_pipe_nipple_long.step", "pipe_nipple_long")
 
 
+@model
+def manifold():
+    """IE7981P01: 3 in x 3/4 in round-bar manifold with drilled ports (axis along +X, 0..76.2)."""
+    return _vendor("IE7981P01.step", "manifold")
+
+
 if __name__ == "__main__":
-    for m in (vacuum_cup, push_to_connect_elbow, pipe_elbow, pipe_nipple_short, pipe_nipple_long):
+    for m in (vacuum_cup, push_to_connect_elbow, pipe_elbow, pipe_nipple_short, pipe_nipple_long, manifold):
         m()

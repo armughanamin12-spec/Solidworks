@@ -1,23 +1,25 @@
-# Vacuum gripper assembly
+# Vacuum gripper arm IE7981A01
 
-Built with [text-to-cad](https://github.com/earthtojake/text-to-cad) from McMaster-Carr STEP models.
+Built with [text-to-cad](https://github.com/earthtojake/text-to-cad) from the supplied McMaster-Carr
+and IE7981P01 STEP files, placed exactly as in the reference assembly
+`vendor/IE7981A01_reference_assembly.step` (every part matches its reference bounding box to 0.0000 mm).
 
-| Item | Part | Thread |
+| Item | Part | Qty |
 | --- | --- | --- |
-| 1 | 44705K266 pipe elbow | 1/8 NPT female x2 (reference part) |
-| 2 | 5427A612 vacuum cup | 1/8 NPT male |
-| 3 | 5148K143 push-to-connect elbow | 1/8 NPT male |
-
-Both male threads are seated shoulder-to-face in the elbow's ports. The two pipe nipples
-(44665K111, 44665K541) are male on both ends, so with no other female part in the set they
-are not in the assembly (their STEP files are in `vendor/`).
+| 1 | 5427A612 vacuum cup | 1 |
+| 2 | 44705K266 pipe elbow, 1/8 NPT female | 1 |
+| 3 | 44665K541 pipe nipple, 12 in | 1 |
+| 4 | IE7981P01 manifold, 3 in x 3/4 in round bar | 1 |
+| 5 | 5148K143 push-to-connect elbow | 2 |
+| 6 | 44665K111 pipe nipple, 3/4 in | 1 |
 
 ```bash
 cd cad
 cad run src/assembly.py            # build the assembly
-cad run src/assembly_drawing.py    # write PDF/vacuum_gripper_assembly.pdf (A4, 1:1)
-cad export <id> STEP/vacuum_gripper_assembly.step
+cad run src/assembly_drawing.py    # write PDF/vacuum_gripper_assembly.pdf (A4, 1:5 + details)
+cad export <id> STEP/vacuum_gripper_arm_IE7981A01.step
 ```
 
-`src/drawing_proxy.py` is a thread-free stand-in used only for the drawing: exact helical
-threads produce degenerate edges in the 2D projection.
+`src/drawing_proxy.py` builds thread-free stand-ins used only for the drawing: exact helical
+threads and sub-millimetre fillets produce degenerate edges in the 2D projection. Their
+outlines are the vendor geometry. The drawing's views skip hidden lines for the same reason.
