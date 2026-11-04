@@ -1,39 +1,56 @@
-"""PRICE Industries-style A4 drawing sheet, matched to drawing IE7981A01.
+"""PRICE Industries drawing sheet (A4 landscape), reproduced from the supplied IE7981A01.pdf.
 
-Layout (all in mm, origin top-left of the page, page 297 x 210):
-  * header strip: Issued date, Blank qty, Part qty, Factory order no, Completion date,
-    Sch date, Comment/Tag, Operator Initials
-  * BOM table top-left: ITEM NO. | PART NUMBER | DESCRIPTION | QTY
-  * view area: assembly views (hidden-line projected from the model) with circled item
-    balloons and arrowed leaders
-  * title block along the bottom: ECN, finish, business unit, tolerances, size, material,
-    gauge, CNC/tool no, site/description/part-no rows, drawn by / approved by, description,
-    drawing no, scale, revision, sheet
-  * footer: print date and drawing no, tool name
+The sheet is data-driven. `price_template.json` holds the exact geometry of the reference
+sheet, extracted from that PDF by `tools/extract_price_template.py`: the header strip, frame,
+BOM grid, title-block grid, rounded corners, projection symbols and every static label, in PDF
+points from the top-left of the page. `render()` draws that template, fills in the fields
+(BOM rows, title block, footer, location), draws the views and the annotations, and writes a
+vector PDF.
 
-`render(...)` draws the sheet to a vector PDF. Views are projected here (not by
-`cad.eng_drawing`, whose sheet is the ISO layout) with build123d's hidden-line projection.
+Text follows the reference: Arial (Liberation Sans, metric-compatible) for the title block,
+Arial Narrow (Liberation Sans squeezed to 83%) for the BOM and balloons. Line weights are the
+reference's 0.48 pt and 0.6 pt.
 
-Typical use (see `assembly_drawing.py`):
-
-    render("out.pdf", views=[View(shape, camera=(1, 0, 0), up=(0, 1, 0), scale=0.5, center=(131, 111))],
-           bom=[BomRow(1, "44665K541", "Standard-Wall Aluminum Pipe Nipple", 1), ...],
-           balloons=[Balloon("1", target=(x, y, z), at=(165, 88)), ...],
-           title=TitleBlock(drawing_no="IE7981A01", ...))
+A drawing is a script like `assembly_drawing.py` that builds a `Sheet` and calls `render`.
 """
 from __future__ import annotations
 
 import datetime
+import json
+import pickle
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Sequence
 
 import numpy as np
 
-PAGE_W, PAGE_H = 297.0, 210.0
+HERE = Path(__file__).resolve().parent
+ASSETS = HERE.parent / "assets"
+CACHE = HERE.parent / ".cache"
+TEMPLATE = json.loads((HERE / "price_template.json").read_text())
+PAGE_W, PAGE_H = TEMPLATE["page"]
 
-# Line weights in points.
-LW_FRAME, LW_CELL, LW_VISIBLE, LW_HIDDEN, LW_LEADER = 0.9, 0.5, 0.7, 0.3, 0.5
-BALLOON_DIAMETER = 5.2
+FONT_DIR = Path("/usr/share/fonts/truetype/liberation")
+FONT_FILES = {"regular": "LiberationSans-Regular.ttf", "bold": "LiberationSans-Bold.ttf",
+              "italic": "LiberationSans-Italic.ttf", "narrow": "LiberationSans-Regular.ttf"}
+NARROW = 0.835                      # Arial Narrow / Arial width ratio measured on the reference BOM
+
+# BOM grid of the reference (PDF points). Row boundaries repeat the reference's pitch.
+BOM_COLUMNS = [60.8, 117.1, 190.6, 386.0, 442.2]
+BOM_ROWS = [46.2, 58.1, 71.4, 84.7, 98.0, 109.9, 123.2, 136.4]
+BOM_PITCH = 13.25
+BOM_BASELINE = 8.76                 # text baseline below the top of a row
+LW_FINE, LW_MEDIUM = 0.48, 0.6
+
+# Reference values of the fields that change from drawing to drawing, used to find their anchors
+# in the template. (text, font, size) -> field name.
+FIELD_KEYS = {
+    ("IE7981A01", "bold", 9.7): "drawing_no", ("1:2", "regular", 6.7): "scale", ("0", "regular", 7.7): "revision",
+    ("1 of 1", "regular", 7.7): "sheet", ("OH", "regular", 6.7): "drawn_by", ("3/12/2025", "regular", 6.7): "date_drawn",
+    ("SCD", "bold", 6.7): "description_0", ("MC#112", "regular", 6.7): "description_1",
+    ("PARTS REMOVAL TOOL", "regular", 6.7): "description_2", ("A", "regular", 6.7): "size",
+    ("Solidworks", "regular", 5.8): "footer_right",
+}
 
 
 @dataclass
@@ -45,56 +62,44 @@ class BomRow:
 
 
 @dataclass
-class View:
-    """An orthographic view of `shape`.
-
-    camera: direction from the part toward the viewer (the view looks along -camera).
-    up:     model direction that points up the page.
-    center: where the middle of the projected view sits on the sheet, (x, y) in mm from the
-            top-left corner.
-    """
-    shape: object
-    camera: tuple
-    up: tuple
-    scale: float = 0.5
-    center: tuple = (150.0, 110.0)
-    hidden: bool = False
-
-
-@dataclass
-class Balloon:
-    """Circled item number at `at` (sheet mm from top-left) with a leader to model `target`.
-    `view` indexes the view the target is projected in."""
-    label: str
-    target: tuple
-    at: tuple
-    view: int = 0
-
-
-@dataclass
 class TitleBlock:
     drawing_no: str = ""
-    description: Sequence[str] = ()
+    description: Sequence[str] = ()             # up to three lines, the first one bold
     scale: str = "1:2"
     revision: str = "0"
     sheet: str = "1 of 1"
     size: str = "A"
-    business_unit: str = "PRICE Industries"
     drawn_by: str = ""
     date_drawn: str = ""
-    approved_by: str = ""
-    date_approved: str = ""
-    material: str = ""
-    gauge: str = ""
-    cnc_tool_no: str = ""
-    finish: str = ""
-    ecn_desc: str = ""
-    ecn_no: str = ""
-    tolerance_linear: Sequence[str] = ("X.X", "X.XX", "X.XXX")
-    tolerance_unit: str = "INCHES"
-    tolerance_angular: str = "X"
-    footer_left: str = ""
-    footer_right: str = "text-to-cad"
+    footer_left: str = ""                       # default: "Print Date: <now> - <drawing no>"
+    footer_right: str = ""
+    location: str = ""                          # rotated path text along the left edge
+
+
+@dataclass
+class View:
+    """An orthographic view of `shape`, drawn with hidden lines removed.
+
+    camera: direction from the part toward the viewer. up: model direction that points up the
+    page. `anchor_model` (a model point) is drawn at `anchor_page` (page points from the top-left)
+    and `k` is page points per model mm.
+    """
+    shape: object
+    camera: tuple
+    up: tuple
+    k: float
+    anchor_model: tuple
+    anchor_page: tuple
+    hidden: bool = False
+    hidden_shape: object = None     # parts whose hidden (dashed) lines are also drawn, as on the reference
+
+
+@dataclass
+class Sheet:
+    title: TitleBlock
+    bom: Sequence[BomRow]
+    views: Sequence[View] = ()
+    annotations: dict = field(default_factory=dict)     # as in ie7981a01_annotations.json
 
 
 # ---------------------------------------------------------------------------------------
@@ -103,38 +108,46 @@ class TitleBlock:
 
 def _basis(camera, up):
     cam = np.asarray(camera, float)
-    cam /= np.linalg.norm(cam)
-    forward = -cam
-    up = np.asarray(up, float)
-    right = np.cross(forward, up)
+    forward = -cam / np.linalg.norm(cam)
+    right = np.cross(forward, np.asarray(up, float))
     right /= np.linalg.norm(right)
-    true_up = np.cross(right, forward)
-    return right, true_up
+    return right, np.cross(right, forward)
 
 
 def project_edges(shape, camera, up, hidden=False):
-    """[(visible?, Nx2 polyline in model mm centred on the shape's bounding-box centre)]."""
+    """Hidden-line projection: ([(visible?, Nx2 polyline)], bbox centre). Coordinates are model mm
+    along the view's right/up axes, relative to the shape's bounding-box centre."""
     import build123d as bd
+    from build123d import GeomType
 
     comp = shape if isinstance(shape, bd.Compound) else bd.Compound(children=[shape])
-    c = comp.bounding_box().center()
-    cam = np.asarray(camera, float)
-    cam = cam / np.linalg.norm(cam)
+    bb = comp.bounding_box()
+    key = (round(bb.min.X, 3), round(bb.min.Y, 3), round(bb.min.Z, 3), round(bb.max.X, 3), round(bb.max.Y, 3),
+           round(bb.max.Z, 3), round(comp.volume, 1), tuple(camera), tuple(up), hidden)
+    cache_file = CACHE / ("proj2_%x.pkl" % (hash(key) & 0xFFFFFFFF))
+    if cache_file.exists():
+        return pickle.loads(cache_file.read_bytes())
+
+    c = bb.center()
+    cam = np.asarray(camera, float) / np.linalg.norm(camera)
     origin = (c.X + 4000 * cam[0], c.Y + 4000 * cam[1], c.Z + 4000 * cam[2])
     vis, hid = comp.project_to_viewport(origin, viewport_up=tuple(up), look_at=(c.X, c.Y, c.Z))
     out = []
     for is_visible, edges in ((True, vis), (False, hid if hidden else [])):
         for e in edges:
-            if str(e.geom_type).endswith("LINE"):
+            if e.geom_type == GeomType.LINE:
                 pts = [e.start_point(), e.end_point()]
             else:
-                n = int(min(160, max(8, e.length / 0.6)))
+                n = int(min(160, max(8, e.length / 0.4)))
                 pts = e.positions(list(np.linspace(0, 1, n)))
             poly = np.array([[p.X, p.Y] for p in pts])
-            if np.linalg.norm(poly[-1] - poly[0]) < 1e-9 and len(poly) == 2:
+            if len(poly) == 2 and np.linalg.norm(poly[-1] - poly[0]) < 1e-9:
                 continue
             out.append((is_visible, poly))
-    return out, np.array([c.X, c.Y, c.Z])
+    result = (out, np.array([c.X, c.Y, c.Z]))
+    CACHE.mkdir(exist_ok=True)
+    cache_file.write_bytes(pickle.dumps(result))
+    return result
 
 
 def project_point(point, centre, camera, up):
@@ -144,7 +157,7 @@ def project_point(point, centre, camera, up):
 
 
 # ---------------------------------------------------------------------------------------
-# drawing helpers (coordinates: mm, y measured down from the top of the page)
+# drawing primitives (page points, y measured down from the top; the axes are inverted)
 
 
 class _Page:
@@ -152,215 +165,183 @@ class _Page:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from matplotlib import font_manager
 
         self.plt = plt
-        self.fig = plt.figure(figsize=(PAGE_W / 25.4, PAGE_H / 25.4))
+        self.fonts = {k: font_manager.FontProperties(fname=str(FONT_DIR / f)) for k, f in FONT_FILES.items()}
+        self.fig = plt.figure(figsize=(PAGE_W / 72, PAGE_H / 72))
         self.ax = self.fig.add_axes([0, 0, 1, 1])
         self.ax.set_xlim(0, PAGE_W)
-        self.ax.set_ylim(0, PAGE_H)
+        self.ax.set_ylim(PAGE_H, 0)
         self.ax.axis("off")
 
-    def y(self, y_top):
-        return PAGE_H - y_top
+    def line(self, x0, y0, x1, y1, lw):
+        self.ax.plot([x0, x1], [y0, y1], color="black", lw=lw, solid_capstyle="butt", zorder=2)
 
-    def rect(self, x0, y0, x1, y1, lw=LW_CELL, rounded=False):
-        from matplotlib.patches import FancyBboxPatch, Rectangle
-        if rounded:
-            p = FancyBboxPatch((x0, self.y(y1)), x1 - x0, y1 - y0, boxstyle="round,pad=0,rounding_size=1.4",
-                               fill=False, lw=lw, ec="black")
+    def poly(self, pts, lw, fill=False, closed=False):
+        from matplotlib.patches import Polygon
+        pts = np.asarray(pts, float)
+        if fill:
+            self.ax.add_patch(Polygon(pts, closed=True, fc="black", ec="black", lw=lw, zorder=3))
         else:
-            p = Rectangle((x0, self.y(y1)), x1 - x0, y1 - y0, fill=False, lw=lw, ec="black")
-        self.ax.add_patch(p)
+            if closed:
+                pts = np.vstack([pts, pts[:1]])
+            self.ax.plot(pts[:, 0], pts[:, 1], color="black", lw=lw, solid_capstyle="round", zorder=2)
 
-    def line(self, x0, y0, x1, y1, lw=LW_CELL, **kw):
-        self.ax.plot([x0, x1], [self.y(y0), self.y(y1)], color="black", lw=lw, solid_capstyle="butt", **kw)
+    def circle(self, cx, cy, r, lw):
+        from matplotlib.patches import Circle
+        self.ax.add_patch(Circle((cx, cy), r, fill=False, ec="black", lw=lw, zorder=3))
 
-    def text(self, x, y, s, size=6, ha="left", va="center", weight="normal", **kw):
-        self.ax.text(x, self.y(y), s, fontsize=size, ha=ha, va=va, fontweight=weight, color="black", **kw)
+    def text(self, s, x, y, font="regular", size=5.8, ha="left", xs=None):
+        """Text with its baseline at y. `ha` is left, center or right about x. With `xs` (glyph
+        origins relative to x) every glyph is placed individually, as in the reference."""
+        if not s.strip():
+            return
+        if xs is not None and len(xs) == len(s):
+            for ch, dx in zip(s, xs):
+                if ch.strip():
+                    self.text(ch, x + dx, y, font, size, "left")
+            return
+        if font == "narrow":
+            from matplotlib.patches import PathPatch
+            from matplotlib.textpath import TextPath
+            from matplotlib.transforms import Affine2D
 
+            tp = TextPath((0, 0), s, size=size, prop=self.fonts["regular"])
+            width = (tp.get_extents().x1 if len(tp.vertices) else 0) * NARROW
+            x0 = x - {"left": 0, "center": width / 2, "right": width}[ha]
+            tr = Affine2D().scale(NARROW, -1).translate(x0, y) + self.ax.transData
+            self.ax.add_patch(PathPatch(tp, fc="black", ec="none", transform=tr, zorder=4))
+        else:
+            self.ax.text(x, y, s, fontproperties=self.fonts[font], fontsize=size, ha=ha, va="baseline", color="black", zorder=4)
 
-def _header(page: _Page):
-    boxes = [("Issued date", 21.5, 40.2), ("Blank qty", 52.5, 64.8), ("Part qty", 65.0, 75.8),
-             ("Factory order no", 77.0, 104.0), ("Completion date", 104.5, 131.0), ("Sch date", 131.6, 143.4),
-             ("Comment/Tag", 155.7, 247.0), ("Operator\nInitials", 259.0, 277.8)]
-    for label, x0, x1 in boxes:
-        page.rect(x0, 7.2, x1, 15.9, lw=LW_CELL, rounded=True)
-        page.text(x0 + 1.0, 9.3 if "\n" not in label else 10.0, label, size=4.6, va="center" if "\n" not in label else "center")
-
-
-def _bom(page: _Page, rows: Sequence[BomRow]):
-    x = [21.5, 41.5, 67.8, 137.5, 157.5]
-    head_h, row_h, top = 4.0, 4.7, 16.6
-    bottom = top + head_h + row_h * len(rows)
-    page.rect(x[0], top, x[-1], bottom, lw=LW_CELL)
-    for xi in x[1:-1]:
-        page.line(xi, top, xi, bottom)
-    for j, label in enumerate(("ITEM NO.", "PART NUMBER", "DESCRIPTION", "QTY")):
-        page.text((x[j] + x[j + 1]) / 2, top + head_h / 2, label, size=5.6, ha="center")
-    for i in range(len(rows) + 1):
-        page.line(x[0], top + head_h + i * row_h, x[-1], top + head_h + i * row_h)
-    for i, r in enumerate(rows):
-        yc = top + head_h + (i + 0.5) * row_h
-        page.text((x[0] + x[1]) / 2, yc, str(r.item), size=5.8, ha="center")
-        page.text(x[1] + 1.0, yc, r.part_number, size=5.8)
-        page.text((x[2] + x[3]) / 2, yc, r.description, size=5.8, ha="center")
-        page.text((x[3] + x[4]) / 2, yc, str(r.qty), size=5.8, ha="center")
-
-
-def _title_block(page: _Page, t: TitleBlock):
-    top, bottom = 178.5, 203.0
-    xl, xm, xr, x_end = 21.5, 90.4, 184.3, 277.8
-    # page frame
-    page.rect(21.5, 16.6, x_end, bottom, lw=LW_FRAME)
-
-    # --- left block
-    rows = [178.5, 181.6, 184.3, 187.8, 190.4, 193.1, 195.8, bottom]
-    page.rect(xl, top, xm, bottom, lw=LW_CELL)
-    for yy in rows[1:-1]:
-        page.line(xl, yy, xm, yy)
-    page.text(xl + 0.8, 180.0, "ECN Desc", size=4.2, weight="bold")
-    page.text(xl + 12, 180.0, t.ecn_desc, size=4.2)
-    page.text(xl + 0.8, 182.9, "Finish", size=4.2, weight="bold")
-    page.text(xl + 12, 182.9, t.finish, size=4.2)
-    page.text(xl + 0.8, 186.0, "Business Unit", size=4.2, weight="bold")
-    page.text(xl + 33, 186.0, t.business_unit, size=4.6, ha="center")
-    page.text((xl + xm) / 2, 189.1, "TOLERANCES UNLESS OTHERWISE SPECIFIED", size=3.9, ha="center", weight="bold")
-    # linear row
-    cx = [xl, xl + 12.5, xl + 25.5, xl + 38.5, xl + 51.5, xm]
-    page.line(cx[1], 190.4, cx[1], 195.8)
-    for xi in cx[2:5]:
-        page.line(xi, 190.4, xi, 193.1)
-    page.line(cx[2], 193.1, cx[2], 195.8)
-    page.text(xl + 0.8, 191.8, "LINEAR±", size=4.2, weight="bold")
-    for k, v in enumerate(t.tolerance_linear):
-        page.text(cx[1] + 1.0 + k * 13.0, 191.8, v, size=4.2)
-    page.text(cx[4] + 1.0, 191.8, t.tolerance_unit, size=4.0)
-    page.text(xl + 0.8, 194.5, "ANGULAR±", size=4.2, weight="bold")
-    page.text(cx[1] + 1.0, 194.5, t.tolerance_angular, size=4.2)
-    page.text(cx[2] + 1.0, 194.5, "DEGREES", size=4.0)
-    # size / projection / ECN no
-    page.line(xl + 14, 195.8, xl + 14, bottom)
-    page.line(xl + 36, 195.8, xl + 36, bottom)
-    page.text(xl + 0.8, 197.2, "Size", size=4.2, weight="bold")
-    page.text(xl + 6, 200.8, t.size, size=6, ha="center")
-    _projection_symbol(page, xl + 25, 200.0)
-    page.text(xl + 37, 197.2, "Engineering Change No.", size=4.2, weight="bold")
-    page.text(xl + 37, 200.8, t.ecn_no, size=5)
-
-    # --- middle block
-    page.rect(xm, top, xr, bottom, lw=LW_CELL)
-    page.line(xm, 181.5, xr, 181.5)
-    page.line(157.5, top, 157.5, 181.5)
-    page.line(171.0, top, 171.0, 181.5)
-    page.text(xm + 0.8, 180.0, "Material", size=4.2, weight="bold")
-    page.text(xm + 12, 180.0, t.material, size=4.6)
-    page.text(158.3, 180.0, "Gauge", size=4.2, weight="bold")
-    page.text(t.gauge and 163.5 or 163.5, 180.0, t.gauge, size=4.6)
-    page.text(171.8, 180.0, "CNC/Tool No.", size=3.9, weight="bold")
-    page.text(171.8, 181.0, "", size=3)
-    ys = [181.5, 188.7, 195.9, bottom]
-    for yy in ys[1:-1]:
-        page.line(xm, yy, xr, yy)
-    for k in range(3):
-        y0 = ys[k]
-        page.text(xm + 0.8, y0 + 1.6, "Site", size=4.2, weight="bold")
-        page.text(xm + 12, y0 + 2.2, "Description", size=4.2, weight="bold")
-        page.text(xm + 12, y0 + 5.4, "Part No", size=4.2, weight="bold", ha="left")
-        page.line(xm + 11, y0, xm + 11, ys[k + 1])
-
-    # --- right block
-    page.rect(xr, top, x_end, bottom, lw=LW_CELL)
-    logo_x1, desc_x0 = 215.0, 215.0
-    page.line(desc_x0, top, desc_x0, 194.8)
-    page.line(xr, 181.5, desc_x0, 181.5)
-    page.text((xr + logo_x1) / 2, 179.8, "PRICE", size=7.5, ha="center", weight="bold", style="italic")
-    page.line(xr, 188.7, 215.0, 188.7)
-    page.line(xr, 195.9, 215.0, 195.9)
-    page.line(198.0, 181.5, 198.0, bottom)
-    page.text(xr + 0.8, 183.0, "Drawn by", size=4.2, weight="bold")
-    page.text(xr + 6, 186.5, t.drawn_by, size=5, ha="center")
-    page.text(198.8, 183.0, "Date Drawn", size=4.2, weight="bold")
-    page.text(206.5, 186.5, t.date_drawn, size=5, ha="center")
-    page.text(xr + 0.8, 190.2, "Approved By", size=4.2, weight="bold")
-    page.text(xr + 6, 193.6, t.approved_by, size=5, ha="center")
-    page.text(198.8, 190.2, "Date Approved", size=4.2, weight="bold")
-    page.text(206.5, 193.6, t.date_approved, size=5, ha="center")
-    # description
-    page.text(desc_x0 + 0.8, 180.0, "Description", size=4.2, weight="bold")
-    for k, line in enumerate(t.description):
-        page.text((desc_x0 + x_end) / 2, 183.2 + k * 3.4, line, size=5.6, ha="center")
-    page.line(desc_x0, 194.8, x_end, 194.8)
-    page.line(249.6, 194.8, 249.6, bottom)
-    page.line(261.1, 194.8, 261.1, bottom)
-    page.line(268.3, 194.8, 268.3, bottom)
-    page.text(desc_x0 + 0.8, 196.0, "Drawing No.", size=4.2, weight="bold")
-    page.text(desc_x0 + 17, 200.6, t.drawing_no, size=9, ha="center", weight="bold")
-    page.text(250.4, 196.0, "Scale", size=4.2, weight="bold")
-    page.text(255.3, 200.6, t.scale, size=5.4, ha="center")
-    page.text(261.9, 196.0, "Revision", size=4.0, weight="bold")
-    page.text(264.7, 200.6, t.revision, size=5.4, ha="center")
-    page.text(269.0, 196.0, "Sheet", size=4.2, weight="bold")
-    page.text(273.0, 200.6, t.sheet, size=5.0, ha="center")
-
-    # footer
-    stamp = datetime.date.today().strftime("%A, %B %d, %Y")
-    left = t.footer_left or f"Print Date: {stamp} - {t.drawing_no}"
-    page.text(21.5, 206.0, left, size=4.6)
-    page.text(x_end, 206.0, t.footer_right, size=4.6, ha="right")
+    def image(self, path, box):
+        from PIL import Image
+        img = Image.open(path)
+        self.ax.imshow(img, extent=(box[0], box[2], box[3], box[1]), aspect="auto", interpolation="none", zorder=1)
+        self.ax.set_xlim(0, PAGE_W)
+        self.ax.set_ylim(PAGE_H, 0)
 
 
-def _projection_symbol(page: _Page, x, y):
-    """Third-angle projection symbol: a cone seen from the side and end, as in the template."""
-    page.line(x - 6, y - 2.6, x - 6, y + 2.6, lw=0.5)
-    page.line(x - 6, y - 2.6, x - 1.5, y - 1.2, lw=0.5)
-    page.line(x - 6, y + 2.6, x - 1.5, y + 1.2, lw=0.5)
-    page.line(x - 1.5, y - 1.2, x - 1.5, y + 1.2, lw=0.5)
-    from matplotlib.patches import Circle
-    page.ax.add_patch(Circle((x + 4.5, page.y(y)), 2.6, fill=False, lw=0.5, ec="black"))
-    page.ax.add_patch(Circle((x + 4.5, page.y(y)), 1.2, fill=False, lw=0.5, ec="black"))
+def _eff(font, size):
+    """Rendered size: the reference's glyphs measure a little larger than the size its PDF reports."""
+    if font == "narrow" or size >= 7:
+        return size
+    return size * (1.06 if size > 6 else 1.035)
 
 
-def _balloon(page: _Page, b: Balloon, target_xy):
-    from matplotlib.patches import Circle
-    bx, by = b.at
-    r = BALLOON_DIAMETER / 2
-    tx, ty = target_xy
-    page.ax.annotate("", xy=(tx, page.y(ty)), xytext=(bx, page.y(by)),
-                     arrowprops=dict(arrowstyle="-|>,head_length=0.7,head_width=0.25", lw=LW_LEADER, color="black",
-                                     shrinkA=r * 72 / 25.4, shrinkB=0))
-    page.ax.add_patch(Circle((bx, page.y(by)), r, fill=True, fc="white", lw=LW_CELL, ec="black", zorder=5))
-    page.text(bx, by, b.label, size=6.5, ha="center", zorder=6)
+def _field_anchors():
+    """{field: text dict} for the template texts that hold per-drawing values, and the static rest."""
+    anchors, static = {}, []
+    for t in TEMPLATE["texts"]:
+        if t["region"] == "bom" and t["y"] > BOM_ROWS[1] - 1:
+            continue                                            # BOM data rows are filled in per drawing
+        key = (t["text"].strip(), t["font"], round(t["size"], 1))
+        name = FIELD_KEYS.get(key)
+        if name and name not in anchors:
+            anchors[name] = t
+            continue
+        if t["text"].startswith("Print Date"):
+            anchors["footer_left"] = t
+            continue
+        static.append(t)
+    return anchors, static
 
 
-def render(out, views: Sequence[View], bom: Sequence[BomRow], balloons: Sequence[Balloon], title: TitleBlock):
+def _draw_template(page: _Page, sheet: Sheet):
+    for x0, y0, x1, y1, lw in TEMPLATE["lines"]:
+        page.line(x0, y0, x1, y1, lw)
+    for c in TEMPLATE["curves"]:
+        page.poly(c["pts"], c["lw"], fill=c["fill"])
+
+    # BOM grid
+    rows = list(BOM_ROWS[: len(sheet.bom) + 2])
+    while len(rows) < len(sheet.bom) + 2:
+        rows.append(rows[-1] + BOM_PITCH)
+    for y in rows:
+        page.line(BOM_COLUMNS[0], y, BOM_COLUMNS[-1], y, LW_FINE)
+    for x in BOM_COLUMNS:
+        page.line(x, rows[0], x, rows[-1], LW_FINE)
+
+    anchors, static = _field_anchors()
+    for t in static:
+        page.text(t["text"], t["x"], t["y"], t["font"], _eff(t["font"], t["size"]), "left", xs=t.get("xs"))
+
+    # BOM text
+    mid = [(a + b) / 2 for a, b in zip(BOM_COLUMNS, BOM_COLUMNS[1:])]
+    for i, row in enumerate(sheet.bom):
+        y = rows[i + 1] + BOM_BASELINE
+        page.text(str(row.item), mid[0], y, "narrow", 7.68, "center")
+        page.text(row.part_number, BOM_COLUMNS[1] + 1.4, y, "narrow", 7.68, "left")
+        page.text(row.description, mid[2], y, "narrow", 7.68, "center")
+        page.text(str(row.qty), mid[3], y, "narrow", 7.68, "center")
+
+    # title-block fields, centred where the reference centres them
+    t = sheet.title
+    now = datetime.datetime.now()
+    values = {"drawing_no": t.drawing_no, "scale": t.scale, "revision": t.revision, "sheet": t.sheet, "size": t.size,
+              "drawn_by": t.drawn_by, "date_drawn": t.date_drawn, "footer_right": t.footer_right,
+              "footer_left": t.footer_left or now.strftime(f"Print Date: %A, %B {now.day}, %Y {now.hour % 12 or 12}:%M:%S %p - ") + t.drawing_no}
+    for i, line in enumerate(t.description):
+        values[f"description_{i}"] = line
+    for name, text in values.items():
+        a = anchors.get(name)
+        if not a or not text:
+            continue
+        if name == "footer_left":
+            page.text(text, a["x"], a["y"], a["font"], _eff(a["font"], a["size"]), "left")
+        elif name == "footer_right":
+            page.text(text, a["x1"], a["y"], a["font"], _eff(a["font"], a["size"]), "right")
+        else:
+            page.text(text, (a["x"] + a["x1"]) / 2, a["y"], a["font"], _eff(a["font"], a["size"]), "center")
+
+    # rotated location text on the left edge
+    loc = TEMPLATE["location"]
+    if t.location:
+        page.ax.text(loc["x"], loc["y"], t.location, fontproperties=page.fonts["regular"], fontsize=loc["size"], rotation=90,
+                     rotation_mode="anchor", ha="left", va="baseline", color="black", zorder=4)
+
+    # logo
+    page.image(ASSETS / TEMPLATE["logo"]["file"], TEMPLATE["logo"]["box"])
+
+
+def _draw_annotations(page: _Page, ann: dict):
+    for b in ann.get("balloons", []):
+        page.circle(b["c"][0], b["c"][1], b["r"], b["lw"])
+    for w in ann.get("welds", []):
+        page.circle(w["c"][0], w["c"][1], w["r"], w["lw"])
+    for x0, y0, x1, y1, lw in ann.get("lines", []):
+        page.line(x0, y0, x1, y1, lw)
+    for tri in ann.get("arrows", []):
+        page.poly(tri, LW_FINE, fill=True)
+    for t in ann.get("texts", []):
+        page.text(t["text"].strip(), t["x"], t["y"], t["font"], t["size"], "left", xs=t.get("xs"))
+    for ph in ann.get("photos", []):
+        page.image(ASSETS / ph["file"], ph["box"])
+
+
+def render(out, sheet: Sheet):
     page = _Page()
-    _header(page)
-    _bom(page, bom)
-    _title_block(page, title)
-
-    projected = []
-    for v in views:
+    _draw_template(page, sheet)
+    for v in sheet.views:
         edges, centre = project_edges(v.shape, v.camera, v.up, hidden=v.hidden)
-        projected.append((v, edges, centre))
-        cx, cy = v.center
-        # centre the view's own 2D extent on `center`
-        allpts = np.vstack([p for _, p in edges])
-        mid = (allpts.min(axis=0) + allpts.max(axis=0)) / 2
-        v._offset = mid            # remembered so balloon targets use the same shift
+        ax_, ay_ = project_point(v.anchor_model, centre, v.camera, v.up)
         for visible, poly in edges:
-            xs = cx + (poly[:, 0] - mid[0]) * v.scale
-            ys = page.y(cy) + (poly[:, 1] - mid[1]) * v.scale
-            page.ax.plot(xs, ys, color="black" if visible else "0.45", lw=LW_VISIBLE if visible else LW_HIDDEN,
-                         ls="-" if visible else (0, (4, 2)), solid_capstyle="round")
-
-    for b in balloons:
-        v, _, centre = projected[b.view]
-        px, py = project_point(b.target, centre, v.camera, v.up)
-        mid = v._offset
-        tx = v.center[0] + (px - mid[0]) * v.scale
-        ty = v.center[1] - (py - mid[1]) * v.scale
-        _balloon(page, b, (tx, ty))
-
+            xs = v.anchor_page[0] + (poly[:, 0] - ax_) * v.k
+            ys = v.anchor_page[1] - (poly[:, 1] - ay_) * v.k
+            if visible:
+                page.ax.plot(xs, ys, color="black", lw=LW_MEDIUM, solid_capstyle="round", zorder=2)
+            else:
+                page.ax.plot(xs, ys, color="black", lw=LW_FINE, ls=(0, (3, 2)), zorder=2)
+        if v.hidden_shape is not None:
+            h_edges, h_centre = project_edges(v.hidden_shape, v.camera, v.up, hidden=True)
+            hx, hy = project_point(v.anchor_model, h_centre, v.camera, v.up)
+            for visible, poly in h_edges:
+                if not visible:
+                    xs = v.anchor_page[0] + (poly[:, 0] - hx) * v.k
+                    ys = v.anchor_page[1] - (poly[:, 1] - hy) * v.k
+                    page.ax.plot(xs, ys, color="black", lw=LW_FINE, ls=(0, (3, 2)), zorder=2)
+    _draw_annotations(page, sheet.annotations)
     page.fig.savefig(str(out), format="pdf")
     page.plt.close(page.fig)
     return out

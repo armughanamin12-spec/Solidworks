@@ -1,55 +1,32 @@
-"""Drawing IE7981A01 in the PRICE Industries sheet layout (see price_sheet.py).
+"""Drawing IE7981A01 in the PRICE sheet, matched to the supplied IE7981A01.pdf.
 
-Layout and BOM follow the supplied IE7981A01.pdf: one horizontal 1:2 view of the arm, circled
-item balloons, BOM table top-left, title block along the bottom. Item numbers and descriptions
-are the ones on that drawing.
+Sheet, BOM, title block and annotations come from the reference (see price_sheet.py and
+tools/extract_price_template.py). The view is the real, threaded assembly projected with hidden
+lines removed, placed at the reference's position and scale: the manifold's top-left corner at
+page point (529.2, 301.3) and 1.3793 pt per model mm (1:2 as printed on A4).
 """
-import numpy as np
+import json
+from pathlib import Path
 
-from cad import eng_drawing  # noqa: F401  (keeps the server tracking the drawing engine)
+from assembly import vacuum_gripper
+from price_sheet import TEMPLATE, BomRow, Sheet, TitleBlock, View, render
 
-from drawing_proxy import placed_proxies
-from price_sheet import Balloon, BomRow, TitleBlock, View, render
+HERE = Path(__file__).resolve().parent
+OUT = HERE.parent / "PDF" / "vacuum_gripper_assembly.pdf"
 
-OUT = "../PDF/vacuum_gripper_assembly.pdf"
-
-# (item, part number, description, labels of the placed parts that count toward the quantity)
+# Item numbers, part numbers, descriptions and quantities exactly as on the reference BOM.
 BOM = [
-    (1, "44665K541", "Standard-Wall Aluminum Pipe Nipple", ("pipe_nipple_long",)),
-    (2, "5427A612", "Vacuum Cup", ("vacuum_cup",)),
-    (3, "44705K266", "Low-Pressure Aluminum Pipe Fitting", ("pipe_elbow",)),
-    (4, "IE7981P01", "", ("manifold",)),
-    (5, "5148K143", "High-Pressure D.O.T. Push-to-Connect Fitting",
-     ("push_to_connect_elbow_upper", "push_to_connect_elbow_lower")),
-    (6, "44665K111", "Standard-Wall Aluminum Pipe Nipple", ("pipe_nipple_short",)),
+    BomRow(1, "44665K541", "Standard-Wall Aluminum Pipe Nipple", 1),
+    BomRow(2, "5427A612", "Vacuum Cup", 1),
+    BomRow(3, "44705K266", "Low-Pressure Aluminum Pipe Fitting", 1),
+    BomRow(4, "IE7981P01", "", 1),
+    BomRow(5, "5148K143", "High-Pressure D.O.T. Push-to-Connect Fitting", 1),
+    BomRow(6, "44665K111", "Standard-Wall Aluminum Pipe Nipple", 1),
 ]
 
 
-def center(shape):
-    c = shape.bounding_box().center()
-    return np.array([c.X, c.Y, c.Z])
-
-
 def build():
-    parts = placed_proxies()
-    shape = __import__("build123d").Compound(children=list(parts.values()), label="vacuum_gripper")
-
-    bom = [BomRow(item, pn, desc, sum(1 for label in labels if label in parts)) for item, pn, desc, labels in BOM]
-
-    # The arm is drawn lying horizontally, elbow at the left and cup pointing down, as on the
-    # reference: the model's +X is toward the viewer and +Y is up the page.
-    view = View(shape, camera=(1, 0, 0), up=(0, 1, 0), scale=0.5, center=(132.5, 119.0))
-
-    nipple, manifold, short = center(parts["pipe_nipple_long"]), center(parts["manifold"]), center(parts["pipe_nipple_short"])
-    balloons = [
-        Balloon("3", target=tuple(center(parts["pipe_elbow"])), at=(46.0, 88.0)),
-        Balloon("1", target=(nipple[0], nipple[1], -285.0), at=(165.0, 88.0)),
-        Balloon("4", target=(manifold[0], manifold[1] + 6.0, -326.0), at=(199.5, 85.0)),
-        Balloon("6", target=(short[0], short[1], -401.0), at=(242.0, 97.0)),
-        Balloon("2", target=tuple(center(parts["vacuum_cup"])), at=(46.5, 143.5)),
-        Balloon("5", target=tuple(center(parts["push_to_connect_elbow_upper"])), at=(205.0, 138.0)),
-        Balloon("5", target=tuple(center(parts["push_to_connect_elbow_lower"])), at=(205.0, 138.0)),
-    ]
+    annotations = json.loads((HERE / "ie7981a01_annotations.json").read_text())
     title = TitleBlock(
         drawing_no="IE7981A01",
         description=("SCD", "MC#112", "PARTS REMOVAL TOOL"),
@@ -59,14 +36,16 @@ def build():
         size="A",
         drawn_by="OH",
         date_drawn="3/12/2025",
+        footer_right="text-to-cad",
+        location=TEMPLATE["location"]["text"],
     )
-    return shape, view, bom, balloons, title
+    # Elbow at the left, cup pointing down: the model's +Y is up the page and -Z is to the right.
+    view = View(vacuum_gripper().shape, camera=(1, 0, 0), up=(0, 1, 0), k=1.3793,
+                anchor_model=(0.0, 48.705 + 9.525, -318.452), anchor_page=(529.2, 301.3))
+    return Sheet(title=title, bom=BOM, views=[view], annotations=annotations)
 
 
 if __name__ == "__main__":
-    from pathlib import Path
-
-    shape, view, bom, balloons, title = build()
-    out = Path(__file__).resolve().parent / OUT
-    render(out.resolve(), [view], bom, balloons, title)
-    print("wrote", out.resolve())
+    OUT.parent.mkdir(exist_ok=True)
+    render(OUT, build())
+    print("wrote", OUT)
