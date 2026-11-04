@@ -16,10 +16,19 @@ and IE7981P01 STEP files, placed exactly as in the reference assembly
 ```bash
 cd cad
 cad run src/assembly.py            # build the assembly
-cad run src/assembly_drawing.py    # write PDF/vacuum_gripper_assembly.pdf (A4, 1:5 + details)
+cad run src/assembly_drawing.py    # write PDF/vacuum_gripper_assembly.pdf (PRICE sheet layout, 1:2)
 cad export <id> STEP/vacuum_gripper_arm_IE7981A01.step
 ```
 
 `src/drawing_proxy.py` builds thread-free stand-ins used only for the drawing: exact helical
 threads and sub-millimetre fillets produce degenerate edges in the 2D projection. Their
 outlines are the vendor geometry. The drawing's views skip hidden lines for the same reason.
+
+## Drawing template
+
+`src/price_sheet.py` reproduces the PRICE Industries sheet from the supplied `IE7981A01.pdf`
+(A4 landscape): header strip, BOM table (ITEM NO. / PART NUMBER / DESCRIPTION / QTY),
+one hidden-line view with circled balloons and arrowed leaders, full title block, footer.
+A new drawing is a script like `src/assembly_drawing.py` that fills in `BomRow`, `View`,
+`Balloon` and `TitleBlock` and calls `render(...)`. Quantities are counted from the model.
+Item numbers and descriptions follow the reference drawing.

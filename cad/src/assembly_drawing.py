@@ -1,63 +1,72 @@
-"""A4 assembly drawing of the vacuum gripper arm IE7981A01."""
-from cad.eng_drawing import Sheet, eng_drawing
+"""Drawing IE7981A01 in the PRICE Industries sheet layout (see price_sheet.py).
 
-from drawing_proxy import bottom_detail_proxy, gripper_proxy, top_detail_proxy
+Layout and BOM follow the supplied IE7981A01.pdf: one horizontal 1:2 view of the arm, circled
+item balloons, BOM table top-left, title block along the bottom. Item numbers and descriptions
+are the ones on that drawing.
+"""
+import numpy as np
 
-# Model-space facts read off the assembly (mm), used to place dimensions on geometry.
-NIPPLE_AXIS_Y = 48.705
-CUP_AXIS_Z = -6.35
-NIPPLE_TOP_Z, NIPPLE_BOTTOM_Z = -18.7, -323.5            # 12 in nipple (304.8)
-MANIFOLD_TOP_Z, MANIFOLD_BOTTOM_Z = -318.452, -394.652   # manifold (76.2)
-MANIFOLD_RIGHT_Y, NIPPLE_RIGHT_Y = 58.23, 53.84          # right-hand silhouettes in the right view
-MANIFOLD_LEFT_X = -16.8                                  # left-hand silhouette in the front view
+from cad import eng_drawing  # noqa: F401  (keeps the server tracking the drawing engine)
+
+from drawing_proxy import placed_proxies
+from price_sheet import Balloon, BomRow, TitleBlock, View, render
+
+OUT = "../PDF/vacuum_gripper_assembly.pdf"
+
+# (item, part number, description, labels of the placed parts that count toward the quantity)
+BOM = [
+    (1, "44665K541", "Standard-Wall Aluminum Pipe Nipple", ("pipe_nipple_long",)),
+    (2, "5427A612", "Vacuum Cup", ("vacuum_cup",)),
+    (3, "44705K266", "Low-Pressure Aluminum Pipe Fitting", ("pipe_elbow",)),
+    (4, "IE7981P01", "", ("manifold",)),
+    (5, "5148K143", "High-Pressure D.O.T. Push-to-Connect Fitting",
+     ("push_to_connect_elbow_upper", "push_to_connect_elbow_lower")),
+    (6, "44665K111", "Standard-Wall Aluminum Pipe Nipple", ("pipe_nipple_short",)),
+]
 
 
-@eng_drawing(out="../PDF/vacuum_gripper_assembly.pdf")
-def vacuum_gripper_drawing():
-    sheet = Sheet(
-        "A4",
-        scale=0.2,
-        title="VACUUM GRIPPER ARM",
-        part_number="IE7981A01",
-        material="SEE ITEMS",
-        revision="A",
-        author="A. AMIN",
-        projection="THIRD ANGLE",
-        general_tolerance="ISO 2768-m",
-        notes=[
-            "ITEMS: 1 VACUUM CUP 5427A612; 2 PIPE ELBOW 44705K266; 3 NIPPLE 12 IN 44665K541;",
-            "4 MANIFOLD IE7981P01; 5 PUSH-TO-CONNECT ELBOW 5148K143 (QTY 2); 6 NIPPLE 3/4 IN 44665K111.",
-            "THREADS SEATED; THREAD DETAIL NOT SHOWN.",
-        ],
+def center(shape):
+    c = shape.bounding_box().center()
+    return np.array([c.X, c.Y, c.Z])
+
+
+def build():
+    parts = placed_proxies()
+    shape = __import__("build123d").Compound(children=list(parts.values()), label="vacuum_gripper")
+
+    bom = [BomRow(item, pn, desc, sum(1 for label in labels if label in parts)) for item, pn, desc, labels in BOM]
+
+    # The arm is drawn lying horizontally, elbow at the left and cup pointing down, as on the
+    # reference: the model's +X is toward the viewer and +Y is up the page.
+    view = View(shape, camera=(1, 0, 0), up=(0, 1, 0), scale=0.5, center=(132.5, 119.0))
+
+    nipple, manifold, short = center(parts["pipe_nipple_long"]), center(parts["manifold"]), center(parts["pipe_nipple_short"])
+    balloons = [
+        Balloon("3", target=tuple(center(parts["pipe_elbow"])), at=(46.0, 88.0)),
+        Balloon("1", target=(nipple[0], nipple[1], -285.0), at=(165.0, 88.0)),
+        Balloon("4", target=(manifold[0], manifold[1] + 6.0, -326.0), at=(199.5, 85.0)),
+        Balloon("6", target=(short[0], short[1], -401.0), at=(242.0, 97.0)),
+        Balloon("2", target=tuple(center(parts["vacuum_cup"])), at=(46.5, 143.5)),
+        Balloon("5", target=tuple(center(parts["push_to_connect_elbow_upper"])), at=(205.0, 138.0)),
+        Balloon("5", target=tuple(center(parts["push_to_connect_elbow_lower"])), at=(205.0, 138.0)),
+    ]
+    title = TitleBlock(
+        drawing_no="IE7981A01",
+        description=("SCD", "MC#112", "PARTS REMOVAL TOOL"),
+        scale="1:2",
+        revision="0",
+        sheet="1 of 1",
+        size="A",
+        drawn_by="OH",
+        date_drawn="3/12/2025",
     )
-
-    # Main views at 1:5, third angle: the right view sits right of the front view.
-    full = gripper_proxy()
-    front = sheet.view(full, "front", at=(32, 132), hidden=False)
-    right = sheet.view(full, "right", at=(90, 132), hidden=False)
-    front.overall()
-    right.overall()
-    right.dim((0, NIPPLE_RIGHT_Y, NIPPLE_TOP_Z), (0, NIPPLE_RIGHT_Y, NIPPLE_BOTTOM_Z), orientation="v", offset=10)
-    right.dim((0, MANIFOLD_RIGHT_Y, MANIFOLD_TOP_Z), (0, MANIFOLD_RIGHT_Y, MANIFOLD_BOTTOM_Z), orientation="v", offset=18)
-
-    # Detail A: cup end, 1:1 (right view).
-    a = sheet.view(top_detail_proxy(), "right", at=(170, 150), scale=1.0, label="DETAIL A (1:1)", hidden=False)
-    a.dim((0, 0, 3.57), (0, NIPPLE_AXIS_Y, 3.57), orientation="h")
-    a.note("1", (0, 12, CUP_AXIS_Z), offset=(-4, -16))
-    a.note("2", (0, 40, -2), offset=(12, 10))
-    a.note("3", (0, NIPPLE_AXIS_Y, -33), offset=(14, -6))
-
-    # Detail B: manifold end, 1:2 (front view).
-    b = sheet.view(bottom_detail_proxy(), "front", at=(255, 132), scale=0.5, label="DETAIL B (1:2)", hidden=False)
-    b.dim((MANIFOLD_LEFT_X, 0, MANIFOLD_TOP_Z), (MANIFOLD_LEFT_X, 0, MANIFOLD_BOTTOM_Z), orientation="v")
-    b.note("3", (-7.27, 0, -310), offset=(-14, 6))
-    b.note("4", (-7.27, 0, -356), offset=(-14, 0))
-    b.note("5", (11.7, 0, -340), offset=(7, 10))
-    b.note("5", (11.7, 0, -378), offset=(7, -10))
-    b.note("6", (-7.27, 0, -400), offset=(-14, -6))
-
-    return sheet
+    return shape, view, bom, balloons, title
 
 
 if __name__ == "__main__":
-    vacuum_gripper_drawing()
+    from pathlib import Path
+
+    shape, view, bom, balloons, title = build()
+    out = Path(__file__).resolve().parent / OUT
+    render(out.resolve(), [view], bom, balloons, title)
+    print("wrote", out.resolve())
